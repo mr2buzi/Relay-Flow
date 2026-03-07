@@ -630,6 +630,11 @@ export default function App() {
             history, dead-letter handling, conditional branching, and a
             zero-secrets demo path.
           </p>
+          <div className="hero-badges">
+            <span>At-least-once execution</span>
+            <span>Branch-aware retries</span>
+            <span>Zero-secrets demo</span>
+          </div>
         </div>
         <div className="hero-card">
           <span>Workspace</span>
