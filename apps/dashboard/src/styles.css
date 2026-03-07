@@ -47,6 +47,10 @@ select {
   margin-bottom: 24px;
 }
 
+.tutorial-panel {
+  margin-bottom: 18px;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   text-transform: uppercase;
@@ -134,9 +138,116 @@ h1 {
 .dead-letter-list,
 .workflow-map,
 .branch-stack,
-.branch-decision-grid {
+.branch-decision-grid,
+.tutorial-nav,
+.tutorial-list,
+.detail-grid {
   display: grid;
   gap: 10px;
+}
+
+.tutorial-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.tutorial-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.tutorial-step-button,
+.secondary-actions button {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 18px;
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.tutorial-step-button:hover,
+.secondary-actions button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(13, 122, 95, 0.35);
+}
+
+.tutorial-step-button.active {
+  border-color: rgba(13, 122, 95, 0.55);
+  background: rgba(226, 244, 238, 0.9);
+}
+
+.tutorial-step-button small,
+.tutorial-copy p,
+.tutorial-note,
+.detail-card span {
+  color: var(--muted);
+}
+
+.tutorial-copy,
+.detail-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.tutorial-label {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--accent-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+.tutorial-copy h3 {
+  margin: 0 0 8px;
+  font-size: 1.3rem;
+}
+
+.tutorial-copy p {
+  margin: 0 0 14px;
+}
+
+.tutorial-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.tutorial-note {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.tutorial-code {
+  margin: 0;
+}
+
+.detail-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.detail-card strong {
+  display: block;
+  margin-top: 6px;
+}
+
+.secondary-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.secondary-actions button {
+  flex: 1 1 180px;
 }
 
 .workflow-item,
@@ -206,7 +317,8 @@ textarea {
 
 .branch-help p,
 .workflow-node p,
-.branch-decision-card p {
+.branch-decision-card p,
+.workflow-guide p {
   margin: 0;
   color: var(--muted);
 }
@@ -328,6 +440,10 @@ textarea {
 
 .workflow-map-panel {
   margin-top: 16px;
+}
+
+.workflow-guide {
+  margin-bottom: 16px;
 }
 
 .workflow-map {
@@ -484,6 +600,11 @@ textarea {
   .hero-card {
     width: 100%;
   }
+
+  .tutorial-grid,
+  .tutorial-content {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -493,14 +614,16 @@ textarea {
 
   .actions,
   .operation-row,
-  .status-bar {
+  .status-bar,
+  .secondary-actions {
     flex-direction: column;
   }
 
   .timeline-summary,
   .filter-grid,
   .context-grid,
-  .branch-columns {
+  .branch-columns,
+  .detail-grid {
     grid-template-columns: 1fr;
   }
 }
