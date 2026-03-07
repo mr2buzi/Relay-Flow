@@ -1,6 +1,6 @@
 # Relay-Flow
 
-I built Relay-Flow as an interview project to show that I can design and ship backend infrastructure, not just CRUD apps. The product is a developer-first execution engine for AI and API workflows with reliability guarantees: retries, backoff, idempotency, observability, and job history.
+I built Relay-Flow as an interview project to show that I can design and ship backend infrastructure, not just CRUD apps. The product is a developer-first execution engine for AI and API workflows with reliability guarantees: retries, backoff, idempotency, observability, job history, and now dead-letter recovery flows.
 
 Instead of trying to compete with visual automation tools like Zapier, Make, or n8n on UI alone, I focused this project on the engineering problem behind workflow automation: external APIs fail all the time, and production systems need a durable way to recover safely.
 
@@ -20,16 +20,17 @@ With Relay-Flow, I can define workflows such as:
 }
 ```
 
-The engine then executes those steps sequentially and persists state between each transition. If a step fails, the system records the attempt, calculates the next retry time, and resumes later without losing the run history.
+The engine executes those steps sequentially and persists state between each transition. If a step fails, the system records the attempt, calculates the next retry time, retries automatically, and if retries are exhausted it creates a dead-letter record that can be inspected and replayed from the dashboard.
 
 ## Why I Built It This Way
 
-I wanted this project to show four things clearly in interviews:
+I wanted this project to show five things clearly in interviews:
 
 1. I can build backend systems with real operational concerns.
 2. I understand workflow state, retries, idempotency, and failure recovery.
 3. I can structure a multi-service codebase cleanly.
 4. I can make the project easy to run and evaluate without hiding behind private credentials.
+5. I can improve an initial MVP into a more infrastructure-grade system over time.
 
 Because this repo is public, I made the platform mock-first. Reviewers can run the whole stack locally without third-party API keys, but the code also supports optional real OpenAI calls through environment variables.
 
@@ -37,9 +38,9 @@ Because this repo is public, I made the platform mock-first. Reviewers can run t
 
 The project is split into a small monorepo:
 
-- `apps/api`: Rust API service for workflow authoring, publishing, triggering, and observability endpoints.
-- `apps/worker`: Rust worker that polls the queue, executes steps, handles retries, and advances schedules.
-- `apps/dashboard`: React dashboard for workflows, JSON editing, triggering runs, and inspecting execution timelines.
+- `apps/api`: Rust API service for workflow authoring, publishing, triggering, recovery actions, and observability endpoints.
+- `apps/worker`: Rust worker that polls the queue, executes steps, handles retries, dead-letter transitions, and advances schedules.
+- `apps/dashboard`: React dashboard for workflows, JSON editing, filtering runs, inspecting dead letters, replaying failures, and triggering runs.
 - `crates/engine`: Shared execution engine, data models, migrations, seed data, API handlers, and worker logic.
 
 High-level flow:
@@ -62,6 +63,16 @@ Client / Dashboard
  step     step  write
 ```
 
+## Current Version
+
+The repo is now at v1.2 from a product milestone point of view. The original MVP covered workflow definitions, execution, retries, and observability. v1.2 adds operational failure tooling so the project feels more like real infrastructure:
+
+- dead-letter records for terminal failures
+- replay lineage between failed runs and their recovery runs
+- retry-now control for runs already waiting in retry state
+- run filtering by status, workflow, trigger, and dead-letter state
+- a dedicated dead-letter panel in the dashboard
+
 ## Core Features
 
 ### 1. Versioned Workflow Definitions
@@ -82,7 +93,7 @@ Each workflow has a retry policy with:
 - max interval
 - jitter
 
-This gives the engine realistic infrastructure behavior instead of a naive “try once” flow.
+This gives the engine realistic infrastructure behavior instead of a naive single-attempt flow.
 
 ### 4. Idempotency
 
@@ -91,23 +102,42 @@ I added idempotency at two levels:
 - workflow trigger idempotency, so duplicate requests can return the same run
 - step-level outbound idempotency propagation for HTTP execution
 
-That matters because “retry” without deduplication is how systems accidentally create duplicate payments, emails, or writes.
+That matters because retries without deduplication are how systems accidentally create duplicate payments, emails, or writes.
 
-### 5. Observability Dashboard
+### 5. Dead-Letter and Recovery Flow
+
+When a run exhausts retries, I now preserve that terminal failure as immutable history and create a dead-letter record with:
+
+- failed step index
+- failed step name
+- terminal error
+- last attempt count
+- original run id
+
+From there, I can:
+
+- inspect the failure in the dashboard
+- force a waiting retry immediately
+- replay a failed run as a brand-new run without mutating the original
+
+That separation matters for auditability.
+
+### 6. Observability Dashboard
 
 The dashboard shows:
 
 - workflows
 - draft JSON definitions
 - latest runs
-- execution status
+- status and trigger type
 - retry state
 - step-by-step attempt history
+- dead-letter records
 - input and accumulated context
 
 I intentionally kept the editor JSON-based rather than visual, because the target user here is a developer and the goal is to demonstrate engine design over no-code UX.
 
-### 6. Secret-Free Demo Mode
+### 7. Secret-Free Demo Mode
 
 I seeded demo workflows and a demo API key so this repo works immediately in local development. If `OPENAI_API_KEY` is not present, AI steps use a deterministic mock summarizer.
 
@@ -128,9 +158,10 @@ I included three workflows to make the project easier to demo:
   - mock scrape step
   - intentional first-attempt failure
   - retry and recovery
-  - summary persistence
+  - dead-letter transition if attempts are exhausted
+  - replayable failure path
 
-The `scrape-and-brief` flow is especially useful in interviews because it visibly demonstrates the retry system working.
+The `scrape-and-brief` flow is especially useful in interviews because it visibly demonstrates retries, dead-lettering, and replay.
 
 ## Tech Stack
 
@@ -194,17 +225,30 @@ npm run dev
 
 ## API Surface
 
-Main endpoints:
+Main workflow endpoints:
 
 - `POST /v1/workflows`
 - `PUT /v1/workflows/:id/draft`
 - `POST /v1/workflows/:id/publish`
 - `POST /v1/workflows/:slug/run`
 - `POST /v1/webhooks/:token`
+- `GET /v1/workflows/:id/history`
+
+Observability and ops endpoints:
+
 - `GET /v1/runs`
 - `GET /v1/runs/:id`
-- `GET /v1/workflows/:id/history`
+- `GET /v1/dead-letters`
+- `POST /v1/runs/:id/retry-now`
+- `POST /v1/runs/:id/replay`
 - `GET /v1/usage`
+
+The run listing now supports additive filtering through query params:
+
+- `status`
+- `workflow_id`
+- `trigger_kind`
+- `dead_lettered`
 
 For authenticated API calls, I use:
 
@@ -212,39 +256,42 @@ For authenticated API calls, I use:
 x-api-key: demo_api_key
 ```
 
-## What I’d Talk Through In An Interview
+## What I Would Talk Through In An Interview
 
-If I were walking an interviewer through this repo, I’d focus on:
+If I were walking an interviewer through this repo, I would focus on:
 
 - why I modeled workflow versions separately from workflow drafts
 - how persisted step attempts make retries inspectable and crash-safe
 - why the engine is explicitly at-least-once rather than pretending to be exactly-once
 - where idempotency is enforced and why that matters for external side effects
+- why dead-letter records are separate from replay runs
+- why replay creates a new run instead of mutating the original failure
 - why I used a mock-first architecture for a public portfolio project
 - how I would evolve this from sequential workflows into DAG execution later
 
 ## Tradeoffs and Current Limitations
 
-I intentionally kept the MVP narrow:
+I intentionally kept the system narrow:
 
 - sequential execution only
-- no DAG/fan-out/fan-in yet
+- no DAG, fan-out, or fan-in yet
 - cron parsing is intentionally lightweight for demo scope
 - auth is single-workspace and simplified
 - billing is represented through seeded plans and usage limits, not live Stripe checkout
-- connectors are generic/mock-first instead of a full marketplace
+- connectors are generic and mock-first instead of a full marketplace
+- dead-letter handling is designed for local operational clarity, not yet for distributed multi-tenant production scale
 
 Those tradeoffs were deliberate. I wanted a smaller system that demonstrates reliability well, rather than a larger system with shallow internals.
 
-## What I’d Build Next
+## What I Would Build Next
 
 If I continued this project, my next steps would be:
 
 - full DAG execution model
-- better rate-limit policies per workflow and per connector
-- dead-letter queue handling
-- richer webhook verification
-- step-level metrics and tracing
+- stronger rate-limit policies per workflow and connector
+- richer tracing and step-level metrics
+- dead-letter replay policies and bulk recovery actions
+- webhook signature verification
 - multi-workspace auth and roles
 - deployable hosted control plane
 
@@ -265,6 +312,7 @@ I built this project to be something I can open in VS Code during an interview a
 - the architecture
 - the failure model
 - the persistence model
+- the recovery model
 - the local developer experience
 - the tradeoffs I made
 
