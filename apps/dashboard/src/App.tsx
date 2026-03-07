@@ -435,6 +435,20 @@ export default function App() {
   const guideSteps = buildGuideSteps(selectedWorkflow, draftPreview.definition);
   const activeGuide =
     guideSteps.find((step) => step.id === activeGuideId) ?? guideSteps[0];
+  const latestSelectedRun = selectedWorkflow
+    ? runs.find((run) => run.workflow_id === selectedWorkflow.id)
+    : null;
+  const nextAction = !selectedWorkflow
+    ? 'Pick a workflow to begin.'
+    : !latestSelectedRun
+      ? `Load the sample payload and click Trigger run for ${selectedWorkflow.slug}.`
+      : !runDetail || runDetail.run.id !== latestSelectedRun.id
+        ? 'Open the latest run to inspect what happened.'
+        : runDetail.run.status === 'retrying'
+          ? 'This run is waiting to retry. Use Retry now or let the worker handle it automatically.'
+          : runDetail.run.dead_lettered || runDetail.run.status === 'failed'
+            ? 'This run failed terminally. Use Replay run to create a fresh recovery run.'
+            : 'You are on track. Explore the run details or switch to another demo workflow.';
 
   async function refresh() {
     const runPath = buildRunQuery({
@@ -488,6 +502,26 @@ export default function App() {
     } catch {
       setMessage(`Failed to copy ${label.toLowerCase()}.`);
     }
+  }
+
+  function chooseWorkflowBySlug(slug: string, guideId = 'author') {
+    const workflow = workflows.find((item) => item.slug === slug);
+    if (!workflow) {
+      setMessage(`Workflow ${slug} is not available yet.`);
+      return;
+    }
+    setSelectedWorkflowId(workflow.id);
+    setRunPayload(samplePayloadForWorkflow(workflow.slug));
+    setActiveGuideId(guideId);
+    setMessage(`Loaded ${workflow.slug}.`);
+  }
+
+  function openLatestRunForSelectedWorkflow() {
+    if (!latestSelectedRun) {
+      setMessage('No run exists yet for this workflow. Trigger one first.');
+      return;
+    }
+    loadRun(latestSelectedRun.id);
   }
 
   async function saveDraft() {
@@ -650,8 +684,46 @@ export default function App() {
 
       <section className="panel tutorial-panel">
         <div className="panel-header">
-          <h2>Guided Tutorial</h2>
-          <span>Start here if you are evaluating the project for the first time</span>
+          <h2>Quick Start</h2>
+          <span>Use this if you just want the shortest path through the product</span>
+        </div>
+        <div className="quick-start-strip">
+          <div className="quick-start-card next-action-card">
+            <span>What should I do next?</span>
+            <strong>{nextAction}</strong>
+            <small>
+              Selected workflow: {selectedWorkflow?.slug ?? 'none'} | Latest run:{' '}
+              {latestSelectedRun?.status ?? 'none yet'}
+            </small>
+          </div>
+          <div className="quick-start-actions">
+            <button onClick={() => chooseWorkflowBySlug('user-signup', 'trigger')}>
+              Easiest demo
+            </button>
+            <button onClick={() => chooseWorkflowBySlug('scrape-and-brief', 'recover')}>
+              Failure demo
+            </button>
+            <button
+              onClick={() =>
+                setRunPayload(samplePayloadForWorkflow(selectedWorkflow?.slug))
+              }
+              disabled={!selectedWorkflow}
+            >
+              Load sample payload
+            </button>
+            <button
+              onClick={triggerSelectedWorkflow}
+              disabled={!selectedWorkflow || loading}
+            >
+              Run selected workflow
+            </button>
+            <button
+              onClick={openLatestRunForSelectedWorkflow}
+              disabled={!latestSelectedRun}
+            >
+              Open latest run
+            </button>
+          </div>
         </div>
         <div className="tutorial-grid">
           <div className="tutorial-nav">
@@ -720,8 +792,13 @@ export default function App() {
 
         <section className="panel editor">
           <div className="panel-header">
-            <h2>JSON Editor</h2>
-            <span>{selectedWorkflow?.slug ?? 'Select a workflow'}</span>
+            <h2>Workflow JSON</h2>
+            <span>{selectedWorkflow?.slug ?? 'Select a workflow'} | advanced view</span>
+          </div>
+          <div className="simple-note">
+            You can ignore this editor if you only want to run the demo. Use the
+            quick-start buttons above, then come back here if you want to inspect
+            how the workflow is defined.
           </div>
           <textarea
             value={draftJson}
@@ -849,8 +926,8 @@ export default function App() {
 
         <section className="panel runs">
           <div className="panel-header">
-            <h2>Runs</h2>
-            <span>Failure ops</span>
+            <h2>Runs And Recovery</h2>
+            <span>Pick a run to see what happened and what to do next</span>
           </div>
 
           <div className="filter-grid">
@@ -958,7 +1035,7 @@ export default function App() {
 
         <section className="panel timeline">
           <div className="panel-header">
-            <h2>Execution timeline</h2>
+            <h2>Run Details</h2>
             <span>{runDetail?.run.workflow_name ?? 'Choose a run'}</span>
           </div>
           {runDetail ? (

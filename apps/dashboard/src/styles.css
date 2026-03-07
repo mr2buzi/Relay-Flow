@@ -227,6 +227,68 @@ h1 {
   gap: 18px;
 }
 
+.quick-start-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr);
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.quick-start-card,
+.simple-note {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(249, 244, 236, 0.78));
+}
+
+.quick-start-card span,
+.quick-start-card small,
+.simple-note {
+  color: var(--muted);
+}
+
+.quick-start-card strong {
+  display: block;
+  margin: 8px 0 6px;
+  font-size: 1.05rem;
+}
+
+.quick-start-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.quick-start-actions button {
+  width: 100%;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(249, 244, 236, 0.76));
+  border-radius: 18px;
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
+  box-shadow: 0 10px 28px rgba(69, 50, 33, 0.08);
+}
+
+.quick-start-actions button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(13, 122, 95, 0.35);
+  box-shadow: 0 16px 34px rgba(69, 50, 33, 0.12);
+}
+
+.quick-start-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .tutorial-content {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
@@ -417,6 +479,10 @@ textarea {
 .workflow-guide p {
   margin: 0;
   color: var(--muted);
+}
+
+.simple-note {
+  margin-bottom: 12px;
 }
 
 .branch-help code {
@@ -728,6 +794,7 @@ textarea {
   }
 
   .tutorial-grid,
+  .quick-start-strip,
   .tutorial-content {
     grid-template-columns: 1fr;
   }
