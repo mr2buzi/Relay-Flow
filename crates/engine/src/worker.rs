@@ -100,6 +100,8 @@ async fn process_run(state: &db::AppState, claim: ClaimContext) -> Result<()> {
                 &state.pool,
                 &claim.run,
                 step_attempt_id,
+                step_index as i32,
+                step.name(),
                 attempt,
                 &definition.retry_policy,
                 &error.to_string(),

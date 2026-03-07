@@ -1,8 +1,10 @@
 use crate::config::AppConfig;
 use crate::db::{self, AppState};
-use crate::models::{CreateWorkflowRequest, TriggerWorkflowRequest, UpdateWorkflowDraftRequest};
+use crate::models::{
+    CreateWorkflowRequest, RunListFilters, TriggerWorkflowRequest, UpdateWorkflowDraftRequest,
+};
 use anyhow::Result;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
@@ -46,6 +48,9 @@ fn router(state: AppState, config: &AppConfig) -> Router {
         .route("/v1/webhooks/:token", post(trigger_webhook))
         .route("/v1/runs", get(list_runs))
         .route("/v1/runs/:id", get(get_run_detail))
+        .route("/v1/runs/:id/retry-now", post(retry_run_now))
+        .route("/v1/runs/:id/replay", post(replay_run))
+        .route("/v1/dead-letters", get(list_dead_letters))
         .route("/v1/usage", get(get_usage))
         .route("/v1/demo", get(get_demo_info))
         .layer(cors)
@@ -164,8 +169,11 @@ async fn trigger_webhook(
     Ok(Json(json!(response)))
 }
 
-async fn list_runs(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let runs = db::list_runs(&state.pool)
+async fn list_runs(
+    State(state): State<AppState>,
+    Query(filters): Query<RunListFilters>,
+) -> Result<Json<Value>, ApiError> {
+    let runs = db::list_runs(&state.pool, &filters)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(json!(runs)))
@@ -179,6 +187,37 @@ async fn get_run_detail(
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(json!(detail)))
+}
+
+async fn retry_run_now(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_api_key(&state, &headers).await?;
+    let response = db::retry_run_now(&state.pool, id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!(response)))
+}
+
+async fn replay_run(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_api_key(&state, &headers).await?;
+    let response = db::replay_run(&state.pool, id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(json!(response)))
+}
+
+async fn list_dead_letters(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let dead_letters = db::list_dead_letters(&state.pool)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(json!(dead_letters)))
 }
 
 async fn get_usage(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {

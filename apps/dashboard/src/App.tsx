@@ -17,6 +17,7 @@ type Workflow = {
 
 type Run = {
   id: string;
+  workflow_id: string;
   workflow_name: string;
   workflow_slug: string;
   status: string;
@@ -24,12 +25,30 @@ type Run = {
   error?: string;
   created_at: string;
   next_retry_at?: string;
+  dead_lettered: boolean;
+  replayed_from_run_id?: string;
+  replay_run_id?: string;
+};
+
+type DeadLetter = {
+  id: string;
+  run_id: string;
+  workflow_id: string;
+  workflow_name: string;
+  workflow_slug: string;
+  failed_step_index: number;
+  failed_step_name: string;
+  terminal_error: string;
+  last_attempt: number;
+  created_at: string;
+  replay_run_id?: string;
 };
 
 type RunDetail = {
   run: Run;
   input: unknown;
   context: unknown;
+  dead_letter?: DeadLetter;
   attempts: Array<{
     id: string;
     step_index: number;
@@ -52,6 +71,13 @@ type Usage = {
   remaining: number;
 };
 
+type RunActionResponse = {
+  run_id: string;
+  status: string;
+  related_run_id?: string;
+  deduplicated: boolean;
+};
+
 const prettyJson = (value: unknown) => JSON.stringify(value, null, 2);
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -70,9 +96,25 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function buildRunQuery(filters: {
+  status: string;
+  workflowId: string;
+  triggerKind: string;
+  deadLetteredOnly: boolean;
+}) {
+  const params = new URLSearchParams();
+  if (filters.status) params.set('status', filters.status);
+  if (filters.workflowId) params.set('workflow_id', filters.workflowId);
+  if (filters.triggerKind) params.set('trigger_kind', filters.triggerKind);
+  if (filters.deadLetteredOnly) params.set('dead_lettered', 'true');
+  const query = params.toString();
+  return query ? `/v1/runs?${query}` : '/v1/runs';
+}
+
 export default function App() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [deadLetters, setDeadLetters] = useState<DeadLetter[]>([]);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -81,16 +123,29 @@ export default function App() {
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [message, setMessage] = useState<string>('Demo mode is active. No third-party keys are required.');
   const [loading, setLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [workflowFilter, setWorkflowFilter] = useState('');
+  const [triggerFilter, setTriggerFilter] = useState('');
+  const [deadLetterOnly, setDeadLetterOnly] = useState(false);
 
   async function refresh() {
-    const [workflowData, runData, usageData] = await Promise.all([
+    const runPath = buildRunQuery({
+      status: statusFilter,
+      workflowId: workflowFilter,
+      triggerKind: triggerFilter,
+      deadLetteredOnly: deadLetterOnly,
+    });
+
+    const [workflowData, runData, usageData, deadLetterData] = await Promise.all([
       api<Workflow[]>('/v1/workflows'),
-      api<Run[]>('/v1/runs'),
+      api<Run[]>(runPath),
       api<Usage>('/v1/usage'),
+      api<DeadLetter[]>('/v1/dead-letters'),
     ]);
     setWorkflows(workflowData);
     setRuns(runData);
     setUsage(usageData);
+    setDeadLetters(deadLetterData);
     if (!selectedWorkflowId && workflowData.length > 0) {
       setSelectedWorkflowId(workflowData[0].id);
       setDraftJson(prettyJson(workflowData[0].draft_definition));
@@ -106,7 +161,7 @@ export default function App() {
       }
     }, 3000);
     return () => window.clearInterval(interval);
-  }, [selectedRunId]);
+  }, [selectedRunId, statusFilter, workflowFilter, triggerFilter, deadLetterOnly]);
 
   const selectedWorkflow = workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
 
@@ -182,6 +237,39 @@ export default function App() {
     }
   }
 
+  async function retryNow() {
+    if (!runDetail) return;
+    setLoading(true);
+    try {
+      await api<RunActionResponse>(`/v1/runs/${runDetail.run.id}/retry-now`, { method: 'POST' });
+      setMessage('Run moved to immediate retry.');
+      await refresh();
+      const detail = await api<RunDetail>(`/v1/runs/${runDetail.run.id}`);
+      setRunDetail(detail);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to retry run now');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function replayRun() {
+    if (!runDetail) return;
+    setLoading(true);
+    try {
+      const result = await api<RunActionResponse>(`/v1/runs/${runDetail.run.id}/replay`, { method: 'POST' });
+      setSelectedRunId(result.run_id);
+      setMessage(result.deduplicated ? 'Existing replay run returned.' : 'Replay run queued.');
+      await refresh();
+      const detail = await api<RunDetail>(`/v1/runs/${result.run_id}`);
+      setRunDetail(detail);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to replay run');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
@@ -189,7 +277,7 @@ export default function App() {
           <p className="eyebrow">Reliable AI & API Workflows</p>
           <h1>RelayFlow</h1>
           <p className="hero-copy">
-            A developer-first execution engine with retries, idempotency, job history, and a zero-secrets demo path.
+            A developer-first execution engine with retries, idempotency, job history, dead-letter handling, and a zero-secrets demo path.
           </p>
         </div>
         <div className="hero-card">
@@ -251,8 +339,48 @@ export default function App() {
         <section className="panel runs">
           <div className="panel-header">
             <h2>Runs</h2>
-            <span>Latest 100</span>
+            <span>Failure ops</span>
           </div>
+
+          <div className="filter-grid">
+            <label>
+              <span>Status</span>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="">All</option>
+                <option value="queued">Queued</option>
+                <option value="running">Running</option>
+                <option value="retrying">Retrying</option>
+                <option value="failed">Failed</option>
+                <option value="succeeded">Succeeded</option>
+              </select>
+            </label>
+            <label>
+              <span>Workflow</span>
+              <select value={workflowFilter} onChange={(event) => setWorkflowFilter(event.target.value)}>
+                <option value="">All</option>
+                {workflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>
+                    {workflow.slug}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Trigger</span>
+              <select value={triggerFilter} onChange={(event) => setTriggerFilter(event.target.value)}>
+                <option value="">All</option>
+                <option value="api">API</option>
+                <option value="webhook">Webhook</option>
+                <option value="cron">Cron</option>
+                <option value="replay">Replay</option>
+              </select>
+            </label>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={deadLetterOnly} onChange={(event) => setDeadLetterOnly(event.target.checked)} />
+              <span>Dead-lettered only</span>
+            </label>
+          </div>
+
           <div className="run-list">
             {runs.map((run) => (
               <button
@@ -262,7 +390,10 @@ export default function App() {
               >
                 <div>
                   <strong>{run.workflow_name}</strong>
-                  <span>{run.trigger_kind}</span>
+                  <span>
+                    {run.trigger_kind}
+                    {run.dead_lettered ? ' • dead-lettered' : ''}
+                  </span>
                 </div>
                 <div>
                   <small className={`status ${run.status}`}>{run.status}</small>
@@ -270,6 +401,24 @@ export default function App() {
                 </div>
               </button>
             ))}
+          </div>
+
+          <div className="subpanel dead-letter-panel">
+            <div className="panel-header">
+              <h3>Dead letters</h3>
+              <span>{deadLetters.length} tracked</span>
+            </div>
+            <div className="dead-letter-list">
+              {deadLetters.map((deadLetter) => (
+                <button key={deadLetter.id} className="dead-letter-item" onClick={() => loadRun(deadLetter.run_id)}>
+                  <strong>{deadLetter.workflow_slug}</strong>
+                  <span>
+                    Step {deadLetter.failed_step_index + 1}: {deadLetter.failed_step_name}
+                  </span>
+                  <small>{deadLetter.replay_run_id ? 'Replay created' : 'Needs operator action'}</small>
+                </button>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -294,6 +443,26 @@ export default function App() {
                   <strong>{runDetail.run.next_retry_at ? new Date(runDetail.run.next_retry_at).toLocaleString() : 'n/a'}</strong>
                 </div>
               </div>
+
+              <div className="operation-row">
+                <button onClick={retryNow} disabled={loading || runDetail.run.status !== 'retrying'}>
+                  Retry now
+                </button>
+                <button onClick={replayRun} disabled={loading || !(runDetail.run.dead_lettered || runDetail.run.status === 'failed')}>
+                  Replay run
+                </button>
+              </div>
+
+              {runDetail.dead_letter ? (
+                <div className="dead-letter-callout">
+                  <strong>Dead-letter record</strong>
+                  <span>
+                    Step {runDetail.dead_letter.failed_step_index + 1}: {runDetail.dead_letter.failed_step_name}
+                  </span>
+                  <p>{runDetail.dead_letter.terminal_error}</p>
+                </div>
+              ) : null}
+
               <div className="timeline-attempts">
                 {runDetail.attempts.map((attempt) => (
                   <article key={attempt.id} className="attempt-card">
@@ -323,7 +492,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="empty-state">Select a run to inspect retries, outputs, and step history.</div>
+            <div className="empty-state">Select a run to inspect retries, dead letters, outputs, and replay actions.</div>
           )}
         </section>
       </main>

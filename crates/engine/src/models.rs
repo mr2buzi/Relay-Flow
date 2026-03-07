@@ -188,6 +188,9 @@ pub struct RunSummary {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub next_retry_at: Option<DateTime<Utc>>,
+    pub dead_lettered: bool,
+    pub replayed_from_run_id: Option<Uuid>,
+    pub replay_run_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +214,22 @@ pub struct RunDetail {
     pub input: Value,
     pub context: Value,
     pub attempts: Vec<StepAttemptSummary>,
+    pub dead_letter: Option<DeadLetterSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadLetterSummary {
+    pub id: Uuid,
+    pub run_id: Uuid,
+    pub workflow_id: Uuid,
+    pub workflow_slug: String,
+    pub workflow_name: String,
+    pub failed_step_index: i32,
+    pub failed_step_name: String,
+    pub terminal_error: String,
+    pub last_attempt: i32,
+    pub created_at: DateTime<Utc>,
+    pub replay_run_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,5 +285,21 @@ pub struct TriggerWorkflowRequest {
 pub struct TriggerWorkflowResponse {
     pub run_id: Uuid,
     pub status: String,
+    pub deduplicated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RunListFilters {
+    pub status: Option<String>,
+    pub workflow_id: Option<Uuid>,
+    pub trigger_kind: Option<String>,
+    pub dead_lettered: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunActionResponse {
+    pub run_id: Uuid,
+    pub status: String,
+    pub related_run_id: Option<Uuid>,
     pub deduplicated: bool,
 }

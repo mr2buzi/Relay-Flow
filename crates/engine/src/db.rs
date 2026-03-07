@@ -6,7 +6,7 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use rand::Rng;
 use serde_json::{json, Value};
 use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{PgPool, Row, Transaction};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row, Transaction};
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -49,6 +49,7 @@ pub struct RunRow {
     pub finished_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub definition: Value,
+    pub replayed_from_run_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +176,17 @@ async fn enqueue_demo_runs(pool: &PgPool) -> Result<()> {
         .await?;
     }
 
+    Ok(())
+}
+
+async fn ensure_within_plan_limit(pool: &PgPool) -> Result<()> {
+    let usage = usage_summary(pool).await?;
+    if usage.executions_this_month >= usage.monthly_limit {
+        return Err(anyhow!(
+            "monthly execution limit reached for plan {}",
+            usage.plan
+        ));
+    }
     Ok(())
 }
 
@@ -403,8 +415,8 @@ pub async fn workflow_history(
         .collect()
 }
 
-pub async fn list_runs(pool: &PgPool) -> Result<Vec<RunSummary>> {
-    let rows = sqlx::query(
+pub async fn list_runs(pool: &PgPool, filters: &RunListFilters) -> Result<Vec<RunSummary>> {
+    let mut builder = QueryBuilder::<Postgres>::new(
         r#"
         select
             r.id,
@@ -419,16 +431,39 @@ pub async fn list_runs(pool: &PgPool) -> Result<Vec<RunSummary>> {
             r.created_at,
             r.started_at,
             r.finished_at,
-            r.next_retry_at
+            r.next_retry_at,
+            (dl.id is not null) as dead_lettered,
+            r.replayed_from_run_id,
+            replay.id as replay_run_id
         from workflow_runs r
         join workflows w on w.id = r.workflow_id
-        order by r.created_at desc
-        limit 100
+        left join dead_letter_runs dl on dl.run_id = r.id
+        left join workflow_runs replay on replay.replayed_from_run_id = r.id
+        where 1 = 1
         "#,
-    )
-    .fetch_all(pool)
-    .await?;
+    );
 
+    if let Some(status) = &filters.status {
+        builder.push(" and r.status = ").push_bind(status);
+    }
+    if let Some(workflow_id) = filters.workflow_id {
+        builder.push(" and r.workflow_id = ").push_bind(workflow_id);
+    }
+    if let Some(trigger_kind) = &filters.trigger_kind {
+        builder
+            .push(" and r.trigger_kind = ")
+            .push_bind(trigger_kind);
+    }
+    if let Some(dead_lettered) = filters.dead_lettered {
+        if dead_lettered {
+            builder.push(" and dl.id is not null");
+        } else {
+            builder.push(" and dl.id is null");
+        }
+    }
+
+    builder.push(" order by r.created_at desc limit 100");
+    let rows = builder.build().fetch_all(pool).await?;
     rows.iter().map(run_summary_from_row).collect()
 }
 
@@ -450,9 +485,14 @@ pub async fn get_run_detail(pool: &PgPool, run_id: Uuid) -> Result<RunDetail> {
             r.finished_at,
             r.next_retry_at,
             r.input,
-            r.context
+            r.context,
+            (dl.id is not null) as dead_lettered,
+            r.replayed_from_run_id,
+            replay.id as replay_run_id
         from workflow_runs r
         join workflows w on w.id = r.workflow_id
+        left join dead_letter_runs dl on dl.run_id = r.id
+        left join workflow_runs replay on replay.replayed_from_run_id = r.id
         where r.id = $1
         "#,
     )
@@ -494,6 +534,7 @@ pub async fn get_run_detail(pool: &PgPool, run_id: Uuid) -> Result<RunDetail> {
                 })
             })
             .collect::<Result<Vec<_>>>()?,
+        dead_letter: get_dead_letter_for_run(pool, run_id).await?,
     })
 }
 
@@ -512,7 +553,96 @@ fn run_summary_from_row(row: &PgRow) -> Result<RunSummary> {
         started_at: row.try_get("started_at")?,
         finished_at: row.try_get("finished_at")?,
         next_retry_at: row.try_get("next_retry_at")?,
+        dead_lettered: row.try_get("dead_lettered")?,
+        replayed_from_run_id: row.try_get("replayed_from_run_id")?,
+        replay_run_id: row.try_get("replay_run_id")?,
     })
+}
+
+pub async fn list_dead_letters(pool: &PgPool) -> Result<Vec<DeadLetterSummary>> {
+    let rows = sqlx::query(
+        r#"
+        select
+            dl.id,
+            dl.run_id,
+            dl.workflow_id,
+            w.slug as workflow_slug,
+            w.name as workflow_name,
+            dl.failed_step_index,
+            dl.failed_step_name,
+            dl.terminal_error,
+            dl.last_attempt,
+            dl.created_at,
+            replay.id as replay_run_id
+        from dead_letter_runs dl
+        join workflows w on w.id = dl.workflow_id
+        left join workflow_runs replay on replay.replayed_from_run_id = dl.run_id
+        order by dl.created_at desc
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(DeadLetterSummary {
+                id: row.try_get("id")?,
+                run_id: row.try_get("run_id")?,
+                workflow_id: row.try_get("workflow_id")?,
+                workflow_slug: row.try_get("workflow_slug")?,
+                workflow_name: row.try_get("workflow_name")?,
+                failed_step_index: row.try_get("failed_step_index")?,
+                failed_step_name: row.try_get("failed_step_name")?,
+                terminal_error: row.try_get("terminal_error")?,
+                last_attempt: row.try_get("last_attempt")?,
+                created_at: row.try_get("created_at")?,
+                replay_run_id: row.try_get("replay_run_id")?,
+            })
+        })
+        .collect()
+}
+
+async fn get_dead_letter_for_run(pool: &PgPool, run_id: Uuid) -> Result<Option<DeadLetterSummary>> {
+    let row = sqlx::query(
+        r#"
+        select
+            dl.id,
+            dl.run_id,
+            dl.workflow_id,
+            w.slug as workflow_slug,
+            w.name as workflow_name,
+            dl.failed_step_index,
+            dl.failed_step_name,
+            dl.terminal_error,
+            dl.last_attempt,
+            dl.created_at,
+            replay.id as replay_run_id
+        from dead_letter_runs dl
+        join workflows w on w.id = dl.workflow_id
+        left join workflow_runs replay on replay.replayed_from_run_id = dl.run_id
+        where dl.run_id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(|row| {
+        Ok(DeadLetterSummary {
+            id: row.try_get("id")?,
+            run_id: row.try_get("run_id")?,
+            workflow_id: row.try_get("workflow_id")?,
+            workflow_slug: row.try_get("workflow_slug")?,
+            workflow_name: row.try_get("workflow_name")?,
+            failed_step_index: row.try_get("failed_step_index")?,
+            failed_step_name: row.try_get("failed_step_name")?,
+            terminal_error: row.try_get("terminal_error")?,
+            last_attempt: row.try_get("last_attempt")?,
+            created_at: row.try_get("created_at")?,
+            replay_run_id: row.try_get("replay_run_id")?,
+        })
+    })
+    .transpose()
 }
 
 pub async fn usage_summary(pool: &PgPool) -> Result<UsageSummary> {
@@ -547,13 +677,7 @@ pub async fn trigger_workflow(
     idempotency_key: Option<String>,
     trigger_kind: String,
 ) -> Result<TriggerWorkflowResponse> {
-    let usage = usage_summary(pool).await?;
-    if usage.executions_this_month >= usage.monthly_limit {
-        return Err(anyhow!(
-            "monthly execution limit reached for plan {}",
-            usage.plan
-        ));
-    }
+    ensure_within_plan_limit(pool).await?;
 
     let workflow = sqlx::query(
         r#"
@@ -593,25 +717,15 @@ pub async fn trigger_workflow(
     }
 
     let published_version_id: Uuid = workflow.try_get("published_version_id")?;
-    let context = serde_json::to_value(RunContext {
-        input: payload.clone(),
-        steps: Vec::new(),
-    })?;
-    let run_id: Uuid = sqlx::query_scalar(
-        r#"
-        insert into workflow_runs
-        (workflow_id, workflow_version_id, trigger_kind, status, input, context, current_step_index, idempotency_key, next_retry_at)
-        values ($1, $2, $3, 'queued', $4, $5, 0, $6, now())
-        returning id
-        "#,
+    let run_id = insert_run(
+        pool,
+        workflow_id,
+        published_version_id,
+        trigger_kind,
+        payload,
+        idempotency_key,
+        None,
     )
-    .bind(workflow_id)
-    .bind(published_version_id)
-    .bind(trigger_kind)
-    .bind(payload)
-    .bind(context)
-    .bind(idempotency_key)
-    .fetch_one(pool)
     .await?;
 
     Ok(TriggerWorkflowResponse {
@@ -619,6 +733,40 @@ pub async fn trigger_workflow(
         status: "queued".to_string(),
         deduplicated: false,
     })
+}
+
+async fn insert_run(
+    pool: &PgPool,
+    workflow_id: Uuid,
+    workflow_version_id: Uuid,
+    trigger_kind: String,
+    payload: Value,
+    idempotency_key: Option<String>,
+    replayed_from_run_id: Option<Uuid>,
+) -> Result<Uuid> {
+    let context = serde_json::to_value(RunContext {
+        input: payload.clone(),
+        steps: Vec::new(),
+    })?;
+    let run_id = sqlx::query_scalar(
+        r#"
+        insert into workflow_runs
+        (workflow_id, workflow_version_id, trigger_kind, status, input, context, current_step_index, idempotency_key, next_retry_at, replayed_from_run_id)
+        values ($1, $2, $3, 'queued', $4, $5, 0, $6, now(), $7)
+        returning id
+        "#,
+    )
+    .bind(workflow_id)
+    .bind(workflow_version_id)
+    .bind(trigger_kind)
+    .bind(payload)
+    .bind(context)
+    .bind(idempotency_key)
+    .bind(replayed_from_run_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(run_id)
 }
 
 pub async fn trigger_webhook(
@@ -639,6 +787,98 @@ pub async fn validate_api_key(pool: &PgPool, key: &str) -> Result<bool> {
         .fetch_optional(pool)
         .await?;
     Ok(exists.is_some())
+}
+
+pub async fn retry_run_now(pool: &PgPool, run_id: Uuid) -> Result<RunActionResponse> {
+    let status: Option<String> =
+        sqlx::query_scalar("select status from workflow_runs where id = $1")
+            .bind(run_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some(status) = status else {
+        return Err(anyhow!("run not found"));
+    };
+    if status != "retrying" {
+        return Err(anyhow!("retry-now is only available for retrying runs"));
+    }
+
+    sqlx::query("update workflow_runs set next_retry_at = now(), updated_at = now() where id = $1")
+        .bind(run_id)
+        .execute(pool)
+        .await?;
+
+    Ok(RunActionResponse {
+        run_id,
+        status,
+        related_run_id: None,
+        deduplicated: false,
+    })
+}
+
+pub async fn replay_run(pool: &PgPool, run_id: Uuid) -> Result<RunActionResponse> {
+    ensure_within_plan_limit(pool).await?;
+
+    if let Some(existing) =
+        sqlx::query("select id, status from workflow_runs where replayed_from_run_id = $1")
+            .bind(run_id)
+            .fetch_optional(pool)
+            .await?
+    {
+        return Ok(RunActionResponse {
+            run_id: existing.try_get("id")?,
+            status: existing.try_get("status")?,
+            related_run_id: Some(run_id),
+            deduplicated: true,
+        });
+    }
+
+    let source = sqlx::query(
+        r#"
+        select id, workflow_id, workflow_version_id, status, input
+        from workflow_runs
+        where id = $1
+        "#,
+    )
+    .bind(run_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(source) = source else {
+        return Err(anyhow!("run not found"));
+    };
+
+    let status: String = source.try_get("status")?;
+    if status != "failed" {
+        return Err(anyhow!(
+            "replay is only available for terminally failed runs"
+        ));
+    }
+
+    let dead_letter_exists: bool =
+        sqlx::query_scalar("select exists(select 1 from dead_letter_runs where run_id = $1)")
+            .bind(run_id)
+            .fetch_one(pool)
+            .await?;
+    if !dead_letter_exists {
+        return Err(anyhow!("run is not dead-lettered"));
+    }
+
+    let replay_id = insert_run(
+        pool,
+        source.try_get("workflow_id")?,
+        source.try_get("workflow_version_id")?,
+        "replay".to_string(),
+        source.try_get("input")?,
+        None,
+        Some(run_id),
+    )
+    .await?;
+
+    Ok(RunActionResponse {
+        run_id: replay_id,
+        status: "queued".to_string(),
+        related_run_id: Some(run_id),
+        deduplicated: false,
+    })
 }
 
 pub async fn claim_next_run(pool: &PgPool) -> Result<Option<ClaimContext>> {
@@ -662,6 +902,7 @@ pub async fn claim_next_run(pool: &PgPool) -> Result<Option<ClaimContext>> {
             r.started_at,
             r.finished_at,
             r.created_at,
+            r.replayed_from_run_id,
             v.definition,
             w.workspace_id,
             w.description,
@@ -748,6 +989,7 @@ pub async fn claim_next_run(pool: &PgPool) -> Result<Option<ClaimContext>> {
             finished_at: row.try_get("finished_at")?,
             created_at: row.try_get("created_at")?,
             definition: row.try_get("definition")?,
+            replayed_from_run_id: row.try_get("replayed_from_run_id")?,
         },
         workflow,
         active_runs,
@@ -869,6 +1111,8 @@ pub async fn fail_step(
     pool: &PgPool,
     run: &RunRow,
     step_attempt_id: Uuid,
+    step_index: i32,
+    step_name: &str,
     attempt: i32,
     retry_policy: &RetryPolicy,
     error: &str,
@@ -904,6 +1148,23 @@ pub async fn fail_step(
         )
         .bind(run.id)
         .bind(error)
+        .execute(pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            insert into dead_letter_runs
+            (run_id, workflow_id, failed_step_index, failed_step_name, terminal_error, last_attempt)
+            values ($1, $2, $3, $4, $5, $6)
+            on conflict (run_id) do nothing
+            "#,
+        )
+        .bind(run.id)
+        .bind(run.workflow_id)
+        .bind(step_index)
+        .bind(step_name)
+        .bind(error)
+        .bind(attempt)
         .execute(pool)
         .await?;
     }
