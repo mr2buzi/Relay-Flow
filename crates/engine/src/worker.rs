@@ -393,3 +393,115 @@ async fn execute_ai_step(state: &db::AppState, input: &Value) -> Result<Value> {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{evaluate_condition, resolve_branch};
+    use crate::models::{
+        Condition, ConditionOperator, IfStep, RunContext, WorkflowStep,
+    };
+    use serde_json::json;
+
+    fn branch_context() -> RunContext {
+        RunContext {
+            input: json!({
+                "plan": "pro",
+                "score": 92,
+                "tags": ["priority", "beta"]
+            }),
+            steps: Vec::new(),
+            execution_plan: vec![WorkflowStep::If(IfStep {
+                name: "branch-on-plan".to_string(),
+                condition: Condition {
+                    path: "input.plan".to_string(),
+                    operator: ConditionOperator::Equals,
+                    value: Some(json!("pro")),
+                },
+                then_steps: vec![WorkflowStep::DbPostgres(crate::models::DbStep {
+                    name: "store-pro-artifact".to_string(),
+                    table: "artifacts".to_string(),
+                    record: json!({"kind": "pro"}),
+                })],
+                else_steps: vec![WorkflowStep::DbPostgres(crate::models::DbStep {
+                    name: "store-standard-artifact".to_string(),
+                    table: "artifacts".to_string(),
+                    record: json!({"kind": "standard"}),
+                })],
+            })],
+            branch_decisions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn evaluates_condition_operators() {
+        let context = branch_context();
+
+        assert!(evaluate_condition(
+            &Condition {
+                path: "input.plan".to_string(),
+                operator: ConditionOperator::Equals,
+                value: Some(json!("pro")),
+            },
+            &context,
+        ));
+        assert!(evaluate_condition(
+            &Condition {
+                path: "input.plan".to_string(),
+                operator: ConditionOperator::NotEquals,
+                value: Some(json!("free")),
+            },
+            &context,
+        ));
+        assert!(evaluate_condition(
+            &Condition {
+                path: "input.tags".to_string(),
+                operator: ConditionOperator::Contains,
+                value: Some(json!("beta")),
+            },
+            &context,
+        ));
+        assert!(evaluate_condition(
+            &Condition {
+                path: "input.score".to_string(),
+                operator: ConditionOperator::Gt,
+                value: Some(json!(80)),
+            },
+            &context,
+        ));
+        assert!(evaluate_condition(
+            &Condition {
+                path: "input.score".to_string(),
+                operator: ConditionOperator::Lt,
+                value: Some(json!(100)),
+            },
+            &context,
+        ));
+        assert!(!evaluate_condition(
+            &Condition {
+                path: "input.missing".to_string(),
+                operator: ConditionOperator::Exists,
+                value: None,
+            },
+            &context,
+        ));
+    }
+
+    #[test]
+    fn branch_resolution_replaces_control_step_and_records_decision() {
+        let mut context = branch_context();
+        let WorkflowStep::If(branch) = context.execution_plan[0].clone() else {
+            panic!("expected if step");
+        };
+
+        resolve_branch(&mut context, 0, branch);
+
+        assert_eq!(context.execution_plan.len(), 1);
+        assert_eq!(context.execution_plan[0].name(), "store-pro-artifact");
+        assert_eq!(context.branch_decisions.len(), 1);
+        assert_eq!(context.branch_decisions[0].chosen_branch, "then");
+        assert_eq!(
+            context.branch_decisions[0].inserted_steps,
+            vec!["store-pro-artifact".to_string()]
+        );
+    }
+}

@@ -74,3 +74,60 @@ pub fn lookup_path(value: &Value, path: &str) -> Option<Value> {
     }
     Some(current.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{lookup_path, resolve_reference};
+    use crate::models::{RunContext, StepContext};
+    use chrono::Utc;
+    use serde_json::json;
+
+    #[test]
+    fn resolves_input_and_step_references() {
+        let context = RunContext {
+            input: json!({
+                "user": {
+                    "plan": "pro"
+                }
+            }),
+            steps: vec![StepContext {
+                name: "create-customer".to_string(),
+                output: json!({
+                    "customer_id": "cus_123",
+                    "nested": {
+                        "region": "eu"
+                    }
+                }),
+                finished_at: Utc::now(),
+            }],
+            execution_plan: Vec::new(),
+            branch_decisions: Vec::new(),
+        };
+
+        assert_eq!(
+            resolve_reference("input.user.plan", &context),
+            Some(json!("pro"))
+        );
+        assert_eq!(
+            resolve_reference("steps.0.output.customer_id", &context),
+            Some(json!("cus_123"))
+        );
+        assert_eq!(
+            resolve_reference("steps.0.output.nested.region", &context),
+            Some(json!("eu"))
+        );
+    }
+
+    #[test]
+    fn lookup_path_handles_arrays() {
+        let value = json!({
+            "items": [
+                {"kind": "first"},
+                {"kind": "second"}
+            ]
+        });
+
+        assert_eq!(lookup_path(&value, "items.1.kind"), Some(json!("second")));
+        assert_eq!(lookup_path(&value, "items.2.kind"), None);
+    }
+}

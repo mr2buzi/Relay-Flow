@@ -227,6 +227,32 @@ Demo credentials:
 - API key: `demo_api_key`
 - Workspace: `RelayFlow Demo`
 
+## Demo Script
+
+If I only had 3 to 5 minutes in an interview, this is the demo flow I would use:
+
+1. Start the stack with `docker compose up --build`.
+2. Open the dashboard and use the `Quick Start` section.
+3. Click `Easiest demo` to load `user-signup`.
+4. Click `Run selected workflow`.
+5. Open the latest run and explain:
+   - the published workflow version
+   - the sequential execution model
+   - the stored run context
+   - the recorded branch decision for the `if` step
+6. Switch to `scrape-and-brief`.
+7. Click `Run selected workflow` again.
+8. Open the run and explain:
+   - the failed first attempt
+   - retry scheduling
+   - dead-letter creation on terminal failure
+   - replay as a new run instead of mutating history
+
+If I were showing only one workflow, I would pick:
+
+- `user-signup` for branching and normal execution
+- `scrape-and-brief` for retries, failure, and recovery
+
 ### Run Services Individually
 
 API:
@@ -297,6 +323,16 @@ If I were walking an interviewer through this repo, I would focus on:
 - why I used a mock-first architecture for a public portfolio project
 - how I would evolve this from sequential workflows into DAG execution later
 
+## Two-Minute Talk Track
+
+If I needed to summarize the project quickly, I would say:
+
+> I built Relay-Flow as a developer-first execution engine for AI and API workflows. The core idea is that calling external APIs is easy, but making those workflows reliable is hard. So instead of building a no-code tool, I focused on the execution layer: published workflow versions, sequential durable execution, retries with backoff, idempotency, dead-letter recovery, and run history.
+>
+> The backend is written in Rust with Postgres as the source of truth. The worker persists every attempt and updates run context after each step, so the system can recover cleanly and remain inspectable. In v1.3 I added conditional branching, but I intentionally implemented it as a persisted execution plan instead of jumping straight to a DAG scheduler. That let me keep the runtime simple while still proving I can design workflow language features in a way that stays deterministic under retry and replay.
+>
+> I also kept the repo mock-first so anyone can run it locally with no secrets, which matters for a public interview project. The result is a system that is small enough to explain clearly, but still shows real infrastructure thinking rather than CRUD or toy automation.
+
 ## Tradeoffs and Current Limitations
 
 I intentionally kept the system narrow:
@@ -331,6 +367,7 @@ I verified the codebase with:
 
 ```bash
 cargo check
+cargo test
 cd apps/dashboard && npm run build
 ```
 
