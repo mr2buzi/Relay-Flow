@@ -1,6 +1,6 @@
 # Relay-Flow
 
-I built Relay-Flow as an interview project to show that I can design and ship backend infrastructure, not just CRUD apps. The product is a developer-first execution engine for AI and API workflows with reliability guarantees: retries, backoff, idempotency, observability, job history, and now dead-letter recovery flows.
+I built Relay-Flow as an interview project to show that I can design and ship backend infrastructure, not just CRUD apps. The product is a developer-first execution engine for AI and API workflows with reliability guarantees: retries, backoff, idempotency, observability, job history, dead-letter recovery flows, and now conditional branching.
 
 Instead of trying to compete with visual automation tools like Zapier, Make, or n8n on UI alone, I focused this project on the engineering problem behind workflow automation: external APIs fail all the time, and production systems need a durable way to recover safely.
 
@@ -20,7 +20,7 @@ With Relay-Flow, I can define workflows such as:
 }
 ```
 
-The engine executes those steps sequentially and persists state between each transition. If a step fails, the system records the attempt, calculates the next retry time, retries automatically, and if retries are exhausted it creates a dead-letter record that can be inspected and replayed from the dashboard.
+The engine executes those steps sequentially and persists state between each transition. If a step fails, the system records the attempt, calculates the next retry time, retries automatically, and if retries are exhausted it creates a dead-letter record that can be inspected and replayed from the dashboard. In v1.3, the engine can also evaluate `if` steps, choose a branch based on structured conditions, and persist that branch decision in run context for replay-safe execution.
 
 ## Why I Built It This Way
 
@@ -65,13 +65,11 @@ Client / Dashboard
 
 ## Current Version
 
-The repo is now at v1.2 from a product milestone point of view. The original MVP covered workflow definitions, execution, retries, and observability. v1.2 adds operational failure tooling so the project feels more like real infrastructure:
+The repo is now at v1.3 from a product milestone point of view.
 
-- dead-letter records for terminal failures
-- replay lineage between failed runs and their recovery runs
-- retry-now control for runs already waiting in retry state
-- run filtering by status, workflow, trigger, and dead-letter state
-- a dedicated dead-letter panel in the dashboard
+- v1.0 established the MVP: workflow definitions, sequential execution, retries, idempotency, observability, and a local zero-secrets demo path.
+- v1.2 added operational failure tooling: dead-letter records, replay lineage, retry-now controls, run filtering, and a dedicated dead-letter panel.
+- v1.3 adds workflow-language branching: `if` steps, a structured condition DSL, persisted branch decisions, and a read-only workflow map in the dashboard.
 
 ## Core Features
 
@@ -82,6 +80,8 @@ I implemented `draft` and `published` workflow states. Runs always bind to a pub
 ### 2. Sequential Job Execution
 
 The worker executes one step at a time, persists the run context after each success, and stores every step attempt in Postgres. That makes the system resumable after worker crashes.
+
+I still keep execution globally sequential in v1.3, but I now persist an active execution plan in run context. When the worker hits an `if` step, it evaluates the condition, records the chosen path, expands the selected branch into the active plan, and continues without turning the runtime into a full DAG scheduler.
 
 ### 3. Retry and Backoff
 
@@ -128,16 +128,41 @@ The dashboard shows:
 
 - workflows
 - draft JSON definitions
+- conditional branch examples and JSON parse feedback
+- a read-only workflow map for linear and branched flows
 - latest runs
 - status and trigger type
 - retry state
 - step-by-step attempt history
 - dead-letter records
+- branch decisions for each run
 - input and accumulated context
 
 I intentionally kept the editor JSON-based rather than visual, because the target user here is a developer and the goal is to demonstrate engine design over no-code UX.
 
-### 7. Secret-Free Demo Mode
+### 7. Conditional Branching
+
+In v1.3 I added a new workflow step type:
+
+- `type: "if"`
+
+That control step supports a structured condition DSL with:
+
+- `equals`
+- `not_equals`
+- `contains`
+- `exists`
+- `gt`
+- `lt`
+
+Conditions resolve against:
+
+- `input`
+- previous step outputs such as `steps.0.output.customer_id`
+
+The branch choice is persisted in run context so retries, dead-lettering, and replay stay deterministic for the same input and workflow version.
+
+### 8. Secret-Free Demo Mode
 
 I seeded demo workflows and a demo API key so this repo works immediately in local development. If `OPENAI_API_KEY` is not present, AI steps use a deterministic mock summarizer.
 
@@ -148,8 +173,9 @@ I included three workflows to make the project easier to demo:
 - `user-signup`
   - mock billing customer creation
   - mock welcome email
-  - AI summary generation
-  - durable artifact write
+  - branch on plan tier
+  - AI summary generation for `pro` users
+  - durable artifact write for either branch
 - `document-summarize`
   - mock OCR extraction
   - AI summarization
@@ -161,7 +187,7 @@ I included three workflows to make the project easier to demo:
   - dead-letter transition if attempts are exhausted
   - replayable failure path
 
-The `scrape-and-brief` flow is especially useful in interviews because it visibly demonstrates retries, dead-lettering, and replay.
+The `user-signup` flow is now the best branching demo because it shows a clean `if/else` path in both the JSON editor and the workflow map. The `scrape-and-brief` flow is still useful because it visibly demonstrates retries, dead-lettering, and replay.
 
 ## Tech Stack
 
@@ -262,6 +288,8 @@ If I were walking an interviewer through this repo, I would focus on:
 
 - why I modeled workflow versions separately from workflow drafts
 - how persisted step attempts make retries inspectable and crash-safe
+- why I stored branch decisions in run context instead of introducing a DAG scheduler too early
+- how the persisted execution plan keeps branching deterministic under retry and replay
 - why the engine is explicitly at-least-once rather than pretending to be exactly-once
 - where idempotency is enforced and why that matters for external side effects
 - why dead-letter records are separate from replay runs
@@ -274,12 +302,13 @@ If I were walking an interviewer through this repo, I would focus on:
 I intentionally kept the system narrow:
 
 - sequential execution only
-- no DAG, fan-out, or fan-in yet
+- conditional branching only, not full DAG, fan-out, or fan-in yet
 - cron parsing is intentionally lightweight for demo scope
 - auth is single-workspace and simplified
 - billing is represented through seeded plans and usage limits, not live Stripe checkout
 - connectors are generic and mock-first instead of a full marketplace
 - dead-letter handling is designed for local operational clarity, not yet for distributed multi-tenant production scale
+- workflow visualization is read-only; the JSON editor remains the source of truth
 
 Those tradeoffs were deliberate. I wanted a smaller system that demonstrates reliability well, rather than a larger system with shallow internals.
 
@@ -288,6 +317,7 @@ Those tradeoffs were deliberate. I wanted a smaller system that demonstrates rel
 If I continued this project, my next steps would be:
 
 - full DAG execution model
+- reusable condition groups and richer branch predicates
 - stronger rate-limit policies per workflow and connector
 - richer tracing and step-level metrics
 - dead-letter replay policies and bulk recovery actions
