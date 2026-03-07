@@ -1,0 +1,8 @@
+target/
+node_modules/
+dist/
+.env
+.DS_Store
+*.tsbuildinfo
+apps/dashboard/vite.config.js
+apps/dashboard/vite.config.d.ts

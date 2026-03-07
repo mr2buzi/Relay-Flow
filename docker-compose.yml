@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relayflow
+      POSTGRES_PASSWORD: relayflow
+      POSTGRES_DB: relayflow
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relayflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgres://relayflow:relayflow@postgres:5432/relayflow
+      SERVER_ADDR: 0.0.0.0:8000
+      APP_BASE_URL: http://localhost:8000
+      DASHBOARD_ORIGIN: http://localhost:5173
+      RELAYFLOW_MODE: demo
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      DATABASE_URL: postgres://relayflow:relayflow@postgres:5432/relayflow
+      RELAYFLOW_MODE: demo
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: ./apps/dashboard
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_API_KEY: demo_api_key
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
