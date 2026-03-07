@@ -1,6 +1,6 @@
 use crate::models::{
-    AiStep, DbStep, HttpStep, MockBehavior, RetryPolicy, TriggerConfig, WorkflowDefinition,
-    WorkflowStep,
+    AiStep, Condition, ConditionOperator, DbStep, HttpStep, IfStep, MockBehavior, RetryPolicy,
+    TriggerConfig, WorkflowDefinition, WorkflowStep,
 };
 use serde_json::json;
 
@@ -49,21 +49,44 @@ pub fn demo_workflows() -> Vec<(&'static str, WorkflowDefinition)> {
                         })),
                         mock_behavior: None,
                     }),
-                    WorkflowStep::AiOpenAi(AiStep {
-                        name: "generate-summary".to_string(),
-                        prompt: "Summarize the onboarding event for {{input.email}} using customer {{steps.0.output.customer_id}}.".to_string(),
-                        model: Some("gpt-4o-mini".to_string()),
-                    }),
-                    WorkflowStep::DbPostgres(DbStep {
-                        name: "store-artifact".to_string(),
-                        table: "artifacts".to_string(),
-                        record: json!({
-                            "kind": "signup_summary",
-                            "user_id": "{{input.user_id}}",
-                            "email": "{{input.email}}",
-                            "summary": "{{steps.2.output.summary}}",
-                            "customer_id": "{{steps.0.output.customer_id}}"
-                        }),
+                    WorkflowStep::If(IfStep {
+                        name: "branch-on-plan".to_string(),
+                        condition: Condition {
+                            path: "input.plan".to_string(),
+                            operator: ConditionOperator::Equals,
+                            value: Some(json!("pro")),
+                        },
+                        then_steps: vec![
+                            WorkflowStep::AiOpenAi(AiStep {
+                                name: "generate-summary".to_string(),
+                                prompt: "Summarize the onboarding event for {{input.email}} using customer {{steps.0.output.customer_id}}.".to_string(),
+                                model: Some("gpt-4o-mini".to_string()),
+                            }),
+                            WorkflowStep::DbPostgres(DbStep {
+                                name: "store-pro-artifact".to_string(),
+                                table: "artifacts".to_string(),
+                                record: json!({
+                                    "kind": "signup_summary",
+                                    "user_id": "{{input.user_id}}",
+                                    "email": "{{input.email}}",
+                                    "plan": "{{input.plan}}",
+                                    "summary": "{{steps.2.output.summary}}",
+                                    "customer_id": "{{steps.0.output.customer_id}}"
+                                }),
+                            }),
+                        ],
+                        else_steps: vec![WorkflowStep::DbPostgres(DbStep {
+                            name: "store-standard-artifact".to_string(),
+                            table: "artifacts".to_string(),
+                            record: json!({
+                                "kind": "signup_summary",
+                                "user_id": "{{input.user_id}}",
+                                "email": "{{input.email}}",
+                                "plan": "{{input.plan}}",
+                                "summary": "AI summary skipped for non-pro signup",
+                                "customer_id": "{{steps.0.output.customer_id}}"
+                            }),
+                        })],
                     }),
                 ],
             },

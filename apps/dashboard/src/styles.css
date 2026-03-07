@@ -131,7 +131,10 @@ h1 {
 .workflow-list,
 .run-list,
 .timeline-attempts,
-.dead-letter-list {
+.dead-letter-list,
+.workflow-map,
+.branch-stack,
+.branch-decision-grid {
   display: grid;
   gap: 10px;
 }
@@ -199,6 +202,18 @@ textarea {
 
 .subpanel textarea {
   min-height: 140px;
+}
+
+.branch-help p,
+.workflow-node p,
+.branch-decision-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.branch-help code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.84rem;
 }
 
 .actions {
@@ -292,6 +307,86 @@ textarea {
   margin-top: 16px;
 }
 
+.validation-state,
+.workflow-node,
+.branch-decision-card {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.validation-state.valid {
+  border-color: rgba(23, 99, 63, 0.22);
+  background: rgba(232, 247, 238, 0.78);
+}
+
+.validation-state.invalid {
+  border-color: rgba(162, 59, 43, 0.22);
+  background: rgba(255, 237, 232, 0.8);
+}
+
+.workflow-map-panel {
+  margin-top: 16px;
+}
+
+.workflow-map {
+  margin-top: 10px;
+}
+
+.workflow-node,
+.branch-decision-card {
+  gap: 10px;
+}
+
+.workflow-node-header,
+.branch-decision-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.workflow-node small,
+.branch-heading,
+.branch-decision-card small,
+.branch-decision-card span {
+  color: var(--muted);
+}
+
+.branch-node {
+  background: rgba(248, 242, 230, 0.9);
+}
+
+.branch-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.branch-column {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.branch-heading {
+  display: block;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+.empty-branch {
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.44);
+}
+
 .timeline-content {
   display: grid;
   gap: 18px;
@@ -333,6 +428,10 @@ textarea {
 .attempt-card header span,
 .attempt-card p {
   color: var(--muted);
+}
+
+.branch-decision-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
 .context-grid {
@@ -400,7 +499,8 @@ textarea {
 
   .timeline-summary,
   .filter-grid,
-  .context-grid {
+  .context-grid,
+  .branch-columns {
     grid-template-columns: 1fr;
   }
 }

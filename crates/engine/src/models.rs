@@ -91,6 +91,7 @@ pub enum WorkflowStep {
     AiOpenAi(AiStep),
     #[serde(rename = "db.postgres")]
     DbPostgres(DbStep),
+    If(IfStep),
 }
 
 impl WorkflowStep {
@@ -99,8 +100,37 @@ impl WorkflowStep {
             WorkflowStep::Http(step) => &step.name,
             WorkflowStep::AiOpenAi(step) => &step.name,
             WorkflowStep::DbPostgres(step) => &step.name,
+            WorkflowStep::If(step) => &step.name,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IfStep {
+    pub name: String,
+    pub condition: Condition,
+    pub then_steps: Vec<WorkflowStep>,
+    #[serde(default)]
+    pub else_steps: Vec<WorkflowStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Condition {
+    pub path: String,
+    pub operator: ConditionOperator,
+    #[serde(default)]
+    pub value: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionOperator {
+    Equals,
+    NotEquals,
+    Contains,
+    Exists,
+    Gt,
+    Lt,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +185,10 @@ pub struct RunContext {
     pub input: Value,
     #[serde(default)]
     pub steps: Vec<StepContext>,
+    #[serde(default)]
+    pub execution_plan: Vec<WorkflowStep>,
+    #[serde(default)]
+    pub branch_decisions: Vec<BranchDecision>,
 }
 
 impl Default for RunContext {
@@ -162,6 +196,8 @@ impl Default for RunContext {
         Self {
             input: Value::Null,
             steps: Vec::new(),
+            execution_plan: Vec::new(),
+            branch_decisions: Vec::new(),
         }
     }
 }
@@ -171,6 +207,17 @@ pub struct StepContext {
     pub name: String,
     pub output: Value,
     pub finished_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchDecision {
+    pub step_name: String,
+    pub step_index: usize,
+    pub condition: Condition,
+    pub matched: bool,
+    pub chosen_branch: String,
+    pub inserted_steps: Vec<String>,
+    pub evaluated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

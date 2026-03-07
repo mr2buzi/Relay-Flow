@@ -78,7 +78,143 @@ type RunActionResponse = {
   deduplicated: boolean;
 };
 
+type WorkflowCondition = {
+  path: string;
+  operator: string;
+  value?: unknown;
+};
+
+type WorkflowStepNode = {
+  type: string;
+  name: string;
+  condition?: WorkflowCondition;
+  then_steps?: WorkflowStepNode[];
+  else_steps?: WorkflowStepNode[];
+};
+
+type WorkflowDefinitionDraft = {
+  name?: string;
+  steps?: WorkflowStepNode[];
+};
+
+type BranchDecision = {
+  step_name: string;
+  step_index: number;
+  matched: boolean;
+  chosen_branch: string;
+  inserted_steps: string[];
+  evaluated_at: string;
+  condition: WorkflowCondition;
+};
+
+type RunContextPayload = {
+  input?: unknown;
+  steps?: Array<{ name: string; output: unknown; finished_at: string }>;
+  execution_plan?: WorkflowStepNode[];
+  branch_decisions?: BranchDecision[];
+};
+
 const prettyJson = (value: unknown) => JSON.stringify(value, null, 2);
+
+const IF_STEP_EXAMPLE = prettyJson({
+  type: 'if',
+  name: 'branch-on-plan',
+  condition: {
+    path: 'input.plan',
+    operator: 'equals',
+    value: 'pro',
+  },
+  then_steps: [
+    {
+      type: 'ai.openai',
+      name: 'generate-summary',
+      prompt: 'Summarize onboarding for {{input.email}}.',
+    },
+    {
+      type: 'db.postgres',
+      name: 'store-pro-artifact',
+      record: {
+        plan: '{{input.plan}}',
+        summary: '{{steps.2.output.summary}}',
+      },
+    },
+  ],
+  else_steps: [
+    {
+      type: 'db.postgres',
+      name: 'store-standard-artifact',
+      record: {
+        summary: 'AI summary skipped for non-pro signup',
+      },
+    },
+  ],
+});
+
+function parseDraftDefinition(raw: string): { definition: WorkflowDefinitionDraft | null; error: string | null } {
+  try {
+    return { definition: JSON.parse(raw) as WorkflowDefinitionDraft, error: null };
+  } catch (error) {
+    return {
+      definition: null,
+      error: error instanceof Error ? error.message : 'Draft JSON is invalid.',
+    };
+  }
+}
+
+function readRunContext(value: unknown): RunContextPayload | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  return value as RunContextPayload;
+}
+
+function describeCondition(condition?: WorkflowCondition) {
+  if (!condition) {
+    return 'Branch condition';
+  }
+  const renderedValue = condition.value === undefined ? '' : ` ${JSON.stringify(condition.value)}`;
+  return `${condition.path} ${condition.operator}${renderedValue}`;
+}
+
+function renderWorkflowNodes(steps: WorkflowStepNode[], scope = 'root'): JSX.Element[] {
+  return steps.map((step, index) => {
+    const key = `${scope}-${index}-${step.name}`;
+    if (step.type === 'if') {
+      return (
+        <article key={key} className="workflow-node branch-node">
+          <div className="workflow-node-header">
+            <strong>{step.name}</strong>
+            <small>if</small>
+          </div>
+          <p>{describeCondition(step.condition)}</p>
+          <div className="branch-columns">
+            <div className="branch-column">
+              <span className="branch-heading">Then</span>
+              <div className="branch-stack">
+                {step.then_steps && step.then_steps.length > 0 ? renderWorkflowNodes(step.then_steps, `${key}-then`) : <div className="empty-branch">No steps</div>}
+              </div>
+            </div>
+            <div className="branch-column">
+              <span className="branch-heading">Else</span>
+              <div className="branch-stack">
+                {step.else_steps && step.else_steps.length > 0 ? renderWorkflowNodes(step.else_steps, `${key}-else`) : <div className="empty-branch">Skipped when false</div>}
+              </div>
+            </div>
+          </div>
+        </article>
+      );
+    }
+
+    return (
+      <article key={key} className="workflow-node">
+        <div className="workflow-node-header">
+          <strong>{step.name}</strong>
+          <small>{step.type}</small>
+        </div>
+      </article>
+    );
+  });
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -128,6 +264,10 @@ export default function App() {
   const [triggerFilter, setTriggerFilter] = useState('');
   const [deadLetterOnly, setDeadLetterOnly] = useState(false);
 
+  const draftPreview = parseDraftDefinition(draftJson);
+  const runContext = readRunContext(runDetail?.context);
+  const branchDecisions = runContext?.branch_decisions ?? [];
+
   async function refresh() {
     const runPath = buildRunQuery({
       status: statusFilter,
@@ -169,7 +309,7 @@ export default function App() {
     if (selectedWorkflow) {
       setDraftJson(prettyJson(selectedWorkflow.draft_definition));
     }
-  }, [selectedWorkflowId, workflows]);
+  }, [selectedWorkflow, selectedWorkflowId, workflows]);
 
   async function saveDraft() {
     if (!selectedWorkflow) return;
@@ -334,6 +474,30 @@ export default function App() {
             <h3>Test payload</h3>
             <textarea value={runPayload} onChange={(event) => setRunPayload(event.target.value)} spellCheck={false} />
           </div>
+          <div className="subpanel branch-help">
+            <h3>Conditional branch example</h3>
+            <p>
+              Use <code>type: "if"</code> with a structured condition. Paths resolve against <code>input</code> and executed step outputs like{' '}
+              <code>steps.0.output.customer_id</code>.
+            </p>
+            <pre>{IF_STEP_EXAMPLE}</pre>
+            <div className={draftPreview.error ? 'validation-state invalid' : 'validation-state valid'}>
+              {draftPreview.error
+                ? `Draft JSON error: ${draftPreview.error}`
+                : 'Draft JSON parsed successfully. Save or publish to run backend validation for if-step structure.'}
+            </div>
+          </div>
+          <div className="subpanel workflow-map-panel">
+            <div className="panel-header">
+              <h3>Workflow map</h3>
+              <span>Read-only preview</span>
+            </div>
+            {draftPreview.definition?.steps && draftPreview.definition.steps.length > 0 ? (
+              <div className="workflow-map">{renderWorkflowNodes(draftPreview.definition.steps)}</div>
+            ) : (
+              <div className="empty-state">Parse a workflow definition to preview linear steps and conditional branches.</div>
+            )}
+          </div>
         </section>
 
         <section className="panel runs">
@@ -390,10 +554,7 @@ export default function App() {
               >
                 <div>
                   <strong>{run.workflow_name}</strong>
-                  <span>
-                    {run.trigger_kind}
-                    {run.dead_lettered ? ' • dead-lettered' : ''}
-                  </span>
+                  <span>{run.dead_lettered ? `${run.trigger_kind} | dead-lettered` : run.trigger_kind}</span>
                 </div>
                 <div>
                   <small className={`status ${run.status}`}>{run.status}</small>
@@ -463,6 +624,24 @@ export default function App() {
                 </div>
               ) : null}
 
+              {branchDecisions.length > 0 ? (
+                <div className="branch-decision-grid">
+                  {branchDecisions.map((decision) => (
+                    <article key={`${decision.step_name}-${decision.step_index}`} className="branch-decision-card">
+                      <header>
+                        <strong>{decision.step_name}</strong>
+                        <small>{decision.chosen_branch}</small>
+                      </header>
+                      <p>{describeCondition(decision.condition)}</p>
+                      <span>{decision.matched ? 'Condition matched' : 'Condition did not match'}</span>
+                      <small>
+                        {decision.inserted_steps.length > 0 ? `Expanded to: ${decision.inserted_steps.join(' -> ')}` : 'No steps inserted for this branch.'}
+                      </small>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="timeline-attempts">
                 {runDetail.attempts.map((attempt) => (
                   <article key={attempt.id} className="attempt-card">
@@ -492,7 +671,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="empty-state">Select a run to inspect retries, dead letters, outputs, and replay actions.</div>
+            <div className="empty-state">Select a run to inspect retries, dead letters, outputs, replay actions, and branch decisions.</div>
           )}
         </section>
       </main>

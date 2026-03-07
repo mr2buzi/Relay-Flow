@@ -27,7 +27,7 @@ pub fn render_string(template: &str, context: &RunContext) -> String {
         };
         let end = start + 2 + end;
         let token = rendered[start + 2..end].trim();
-        let replacement = lookup_token(token, context).unwrap_or(Value::Null);
+        let replacement = resolve_reference(token, context).unwrap_or(Value::Null);
         let replacement = match replacement {
             Value::String(text) => text,
             Value::Null => String::new(),
@@ -38,7 +38,7 @@ pub fn render_string(template: &str, context: &RunContext) -> String {
     rendered
 }
 
-fn lookup_token(token: &str, context: &RunContext) -> Option<Value> {
+pub fn resolve_reference(token: &str, context: &RunContext) -> Option<Value> {
     if let Some(path) = token.strip_prefix("input.") {
         lookup_path(&context.input, path)
     } else if token == "input" {
@@ -60,7 +60,7 @@ fn lookup_token(token: &str, context: &RunContext) -> Option<Value> {
     }
 }
 
-fn lookup_path(value: &Value, path: &str) -> Option<Value> {
+pub fn lookup_path(value: &Value, path: &str) -> Option<Value> {
     let mut current = value;
     for segment in path.split('.') {
         match current {

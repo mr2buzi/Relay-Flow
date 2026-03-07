@@ -747,6 +747,8 @@ async fn insert_run(
     let context = serde_json::to_value(RunContext {
         input: payload.clone(),
         steps: Vec::new(),
+        execution_plan: Vec::new(),
+        branch_decisions: Vec::new(),
     })?;
     let run_id = sqlx::query_scalar(
         r#"
@@ -1033,6 +1035,40 @@ pub async fn create_step_attempt(
     Ok(id)
 }
 
+pub async fn save_run_state(
+    pool: &PgPool,
+    run_id: Uuid,
+    context: &RunContext,
+    current_step_index: i32,
+) -> Result<()> {
+    let context = serde_json::to_value(context)?;
+    sqlx::query(
+        "update workflow_runs set context = $2, current_step_index = $3, error = null, updated_at = now() where id = $1",
+    )
+    .bind(run_id)
+    .bind(context)
+    .bind(current_step_index)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn complete_run_without_step(
+    pool: &PgPool,
+    run_id: Uuid,
+    context: &RunContext,
+) -> Result<()> {
+    let context = serde_json::to_value(context)?;
+    sqlx::query(
+        "update workflow_runs set context = $2, status = 'succeeded', finished_at = now(), next_retry_at = null, error = null, updated_at = now() where id = $1",
+    )
+    .bind(run_id)
+    .bind(context)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn complete_step_success(
     pool: &PgPool,
     run_id: Uuid,
@@ -1285,11 +1321,45 @@ fn validate_definition(definition: &WorkflowDefinition) -> Result<()> {
     if definition.steps.is_empty() {
         return Err(anyhow!("workflow must include at least one step"));
     }
-    for step in &definition.steps {
+    validate_steps(&definition.steps, "workflow.steps")?;
+    Ok(())
+}
+
+fn validate_steps(steps: &[WorkflowStep], scope: &str) -> Result<()> {
+    if steps.is_empty() {
+        return Err(anyhow!("{scope} must include at least one step"));
+    }
+
+    for (index, step) in steps.iter().enumerate() {
         if step.name().trim().is_empty() {
-            return Err(anyhow!("workflow steps must have non-empty names"));
+            return Err(anyhow!("{scope}[{index}] must have a non-empty name"));
+        }
+
+        if let WorkflowStep::If(branch) = step {
+            if branch.condition.path.trim().is_empty() {
+                return Err(anyhow!(
+                    "{scope}[{index}] condition.path must be a non-empty reference like input.plan"
+                ));
+            }
+
+            match branch.condition.operator {
+                ConditionOperator::Exists => {}
+                _ if branch.condition.value.is_none() => {
+                    return Err(anyhow!(
+                        "{scope}[{index}] condition.value is required for operator {:?}",
+                        branch.condition.operator
+                    ));
+                }
+                _ => {}
+            }
+
+            validate_steps(&branch.then_steps, &format!("{scope}[{index}].then_steps"))?;
+            if !branch.else_steps.is_empty() {
+                validate_steps(&branch.else_steps, &format!("{scope}[{index}].else_steps"))?;
+            }
         }
     }
+
     Ok(())
 }
 

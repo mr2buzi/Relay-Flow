@@ -1,8 +1,12 @@
 use crate::config::AppConfig;
 use crate::db::{self, ClaimContext};
-use crate::models::{HttpStep, RunContext, WorkflowDefinition, WorkflowStep};
-use crate::templates::{render_json, render_string};
+use crate::models::{
+    BranchDecision, Condition, ConditionOperator, HttpStep, IfStep, RunContext, WorkflowDefinition,
+    WorkflowStep,
+};
+use crate::templates::{render_json, render_string, resolve_reference};
 use anyhow::{anyhow, Result};
+use chrono::Utc;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
 use tracing::{error, info};
@@ -49,15 +53,33 @@ async fn process_schedules(state: &db::AppState) -> Result<()> {
 
 async fn process_run(state: &db::AppState, claim: ClaimContext) -> Result<()> {
     let definition: WorkflowDefinition = serde_json::from_value(claim.run.definition.clone())?;
-    let context: RunContext = serde_json::from_value(claim.run.context.clone())?;
-    let step_index = claim.run.current_step_index as usize;
-    let Some(step) = definition.steps.get(step_index).cloned() else {
-        return Err(anyhow!(
-            "workflow {} referenced missing step {}",
-            claim.run.workflow_slug,
-            step_index
-        ));
+    let mut context: RunContext = serde_json::from_value(claim.run.context.clone())?;
+    let step_index = claim.run.current_step_index.max(0) as usize;
+    let mut should_persist_context = false;
+
+    if context.execution_plan.is_empty() {
+        context.execution_plan = definition.steps.clone();
+        should_persist_context = true;
+    }
+
+    let step = loop {
+        let Some(step) = context.execution_plan.get(step_index).cloned() else {
+            db::complete_run_without_step(&state.pool, claim.run.id, &context).await?;
+            return Ok(());
+        };
+
+        match step {
+            WorkflowStep::If(branch) => {
+                resolve_branch(&mut context, step_index, branch);
+                should_persist_context = true;
+            }
+            executable => break executable,
+        }
     };
+
+    if should_persist_context {
+        db::save_run_state(&state.pool, claim.run.id, &context, step_index as i32).await?;
+    }
 
     let input = build_step_input(&step, &context);
     let attempt = db::attempt_number(&state.pool, claim.run.id, step_index as i32).await?;
@@ -70,11 +92,11 @@ async fn process_run(state: &db::AppState, claim: ClaimContext) -> Result<()> {
         &input,
     )
     .await?;
-    let outcome = execute_step(state, &claim, &step, attempt, &input).await;
+    let outcome = execute_step(state, &claim, &step, step_index as i32, attempt, &input).await;
 
     match outcome {
         Ok(output) => {
-            if step_index + 1 == definition.steps.len() {
+            if step_index + 1 == context.execution_plan.len() {
                 db::complete_run_success(
                     &state.pool,
                     claim.run.id,
@@ -129,6 +151,7 @@ fn build_step_input(step: &WorkflowStep, context: &RunContext) -> Value {
             "table": step.table,
             "record": render_json(&step.record, context)
         }),
+        WorkflowStep::If(_) => Value::Null,
     }
 }
 
@@ -136,15 +159,11 @@ async fn execute_step(
     state: &db::AppState,
     claim: &ClaimContext,
     step: &WorkflowStep,
+    step_index: i32,
     attempt: i32,
     input: &Value,
 ) -> Result<Value> {
-    let idempotency_key = format!(
-        "{}:{}:{}",
-        claim.run.id,
-        step.name(),
-        claim.run.current_step_index
-    );
+    let idempotency_key = format!("{}:{}:{}", claim.run.id, step.name(), step_index);
     match step {
         WorkflowStep::Http(step) => execute_http_step(step, attempt, input, &idempotency_key).await,
         WorkflowStep::AiOpenAi(_) => execute_ai_step(state, input).await,
@@ -154,12 +173,92 @@ async fn execute_step(
                 &state.pool,
                 claim.run.workflow_id,
                 claim.run.id,
-                claim.run.current_step_index,
+                step_index,
                 &step.table,
                 record,
             )
             .await
         }
+        WorkflowStep::If(_) => Err(anyhow!("control steps cannot be executed directly")),
+    }
+}
+
+fn resolve_branch(context: &mut RunContext, step_index: usize, branch: IfStep) {
+    let matched = evaluate_condition(&branch.condition, context);
+    let (chosen_branch, chosen_steps) = if matched {
+        ("then".to_string(), branch.then_steps.clone())
+    } else if branch.else_steps.is_empty() {
+        ("skipped".to_string(), Vec::new())
+    } else {
+        ("else".to_string(), branch.else_steps.clone())
+    };
+    let inserted_steps = chosen_steps
+        .iter()
+        .map(|step| step.name().to_string())
+        .collect::<Vec<_>>();
+
+    context.branch_decisions.retain(|decision| {
+        !(decision.step_index == step_index && decision.step_name == branch.name)
+    });
+    context.branch_decisions.push(BranchDecision {
+        step_name: branch.name.clone(),
+        step_index,
+        condition: branch.condition.clone(),
+        matched,
+        chosen_branch,
+        inserted_steps,
+        evaluated_at: Utc::now(),
+    });
+    context
+        .execution_plan
+        .splice(step_index..=step_index, chosen_steps);
+}
+
+fn evaluate_condition(condition: &Condition, context: &RunContext) -> bool {
+    let Some(actual) = resolve_reference(&condition.path, context) else {
+        return matches!(condition.operator, ConditionOperator::Exists) && false;
+    };
+
+    match condition.operator {
+        ConditionOperator::Exists => true,
+        ConditionOperator::Equals => condition
+            .value
+            .as_ref()
+            .is_some_and(|expected| actual == *expected),
+        ConditionOperator::NotEquals => condition
+            .value
+            .as_ref()
+            .is_some_and(|expected| actual != *expected),
+        ConditionOperator::Contains => condition
+            .value
+            .as_ref()
+            .is_some_and(|expected| contains_value(&actual, expected)),
+        ConditionOperator::Gt => condition.value.as_ref().is_some_and(|expected| {
+            compare_values(&actual, expected).is_some_and(|result| result.is_gt())
+        }),
+        ConditionOperator::Lt => condition.value.as_ref().is_some_and(|expected| {
+            compare_values(&actual, expected).is_some_and(|result| result.is_lt())
+        }),
+    }
+}
+
+fn contains_value(actual: &Value, expected: &Value) -> bool {
+    match (actual, expected) {
+        (Value::String(actual), Value::String(expected)) => actual.contains(expected),
+        (Value::Array(actual), _) => actual.iter().any(|item| item == expected),
+        _ => false,
+    }
+}
+
+fn compare_values(actual: &Value, expected: &Value) -> Option<std::cmp::Ordering> {
+    match (actual, expected) {
+        (Value::Number(actual), Value::Number(expected)) => {
+            let actual = actual.as_f64()?;
+            let expected = expected.as_f64()?;
+            actual.partial_cmp(&expected)
+        }
+        (Value::String(actual), Value::String(expected)) => Some(actual.cmp(expected)),
+        _ => None,
     }
 }
 
