@@ -1,5 +1,7 @@
 # Relay-Flow
 
+[![CI](https://github.com/mr2buzi/Relay-Flow/actions/workflows/ci.yml/badge.svg)](https://github.com/mr2buzi/Relay-Flow/actions/workflows/ci.yml)
+
 Relay-Flow is a durable execution engine for API and AI workflows. It focuses on the failure modes that appear after a workflow leaves a single process: retries, idempotency, persisted state, recovery and deterministic branching.
 
 ## Capabilities
@@ -15,6 +17,14 @@ Relay-Flow is a durable execution engine for API and AI workflows. It focuses on
 - Mock integrations for a zero-secret local demo
 
 ## Architecture
+
+```mermaid
+flowchart LR
+    D[React dashboard] --> A[Axum API]
+    A --> P[(PostgreSQL)]
+    W[Execution worker] --> P
+    W --> I[HTTP and mock integrations]
+```
 
 - `apps/api` — Axum HTTP API
 - `apps/worker` — asynchronous execution worker
