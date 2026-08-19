@@ -26,11 +26,11 @@ flowchart LR
     W --> I[HTTP and mock integrations]
 ```
 
-- `apps/api` — Axum HTTP API
-- `apps/worker` — asynchronous execution worker
-- `apps/dashboard` — React/Vite operations dashboard
-- `crates/engine` — shared models, persistence, worker logic, migrations and seed data
-- PostgreSQL — workflow definitions, runs, steps, context and recovery state
+- `apps/api`: Axum HTTP API
+- `apps/worker`: asynchronous execution worker
+- `apps/dashboard`: React/Vite operations dashboard
+- `crates/engine`: shared models, persistence, worker logic, migrations and seed data
+- PostgreSQL: workflow definitions, runs, steps, context and recovery state
 
 The runtime uses at-least-once execution. Runs bind to a published workflow version, and replay creates a new run instead of rewriting historical state.
 
